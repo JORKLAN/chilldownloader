@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/features.svg" alt="Feature overview" width="100%">
+  <img src="assets/features.svg?v=2" alt="Feature overview" width="100%">
 </p>
 
 ---
