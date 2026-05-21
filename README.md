@@ -118,14 +118,7 @@ any of the supported managers. It uses a Trusted-Types-safe rendering path so it
 works on sites with strict content-security policies, and it re-injects itself
 after in-page navigation so it stays present as you move between videos.
 
-## Notes and limitations
 
-Element-based ad hiding is cosmetic. For full network-level blocking, a
-dedicated extension such as uBlock Origin remains the stronger tool, and the two
-can run side by side. Video-ad skipping handles the common skippable and
-countdown formats; some server-stitched ad formats resist every client-side
-approach, so completeness cannot be guaranteed on those. Streaming sites also
-change their markup over time, which can occasionally require selector updates.
 
 ## License
 
