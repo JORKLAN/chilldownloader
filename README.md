@@ -62,15 +62,29 @@ layer drifts behind the panel for a little depth without distraction.
 
 ## Installation
 
-Install a userscript manager first. Tampermonkey, Violentmonkey, and Greasemonkey
-are all supported.
+First, install a userscript manager in your browser. Tampermonkey,
+Violentmonkey, and Greasemonkey are all supported.
 
-1. Add one of the managers above to your browser.
-2. Open the manager dashboard and choose **Create a new script**.
-3. Replace the template with the contents of `chilltube.user.js`.
-4. Save. Open or refresh a YouTube tab and the panel appears.
+Once a manager is installed, the easiest way to add ChillTube is the one-click
+install from GreasyFork:
 
-To update, paste the newer version over the old one in the same editor and save.
+<p align="center">
+  <a href="https://greasyfork.org/scripts/YOUR-SCRIPT-ID">
+    <img src="https://img.shields.io/badge/Install%20from%20GreasyFork-Click%20here-34c759?style=for-the-badge" alt="Install from GreasyFork">
+  </a>
+</p>
+
+Clicking the button opens the script page on GreasyFork. Press the green
+**Install** button there and your userscript manager will pick it up and confirm
+the installation. After that, open or refresh a YouTube tab and the panel
+appears.
+
+If you would rather install it by hand, open your manager's dashboard, choose
+**Create a new script**, replace the template with the contents of
+`chilltube.user.js`, and save.
+
+To update, GreasyFork-installed scripts update automatically. A manual install
+is updated by pasting the newer version over the old one and saving.
 
 ## Configuration
 
