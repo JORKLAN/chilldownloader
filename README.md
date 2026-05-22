@@ -111,7 +111,7 @@ Once a manager is installed, the easiest way to add ChillTube is the one-click
 install from GreasyFork:
 
 <p align="center">
-  <a href="https://greasyfork.org/scripts/https://greasyfork.org/en/scripts/579352-chilltube-ad-skip-sponsorblock-hd-download-for-tiktok-and-youtube">
+  <a href="https://greasyfork.org/en/scripts/579352-chilltube-ad-skip-sponsorblock-hd-download-for-tiktok-and-youtube">
     <img src="https://img.shields.io/badge/Install%20from%20GreasyFork-Click%20here-34c759?style=for-the-badge" alt="Install from GreasyFork">
   </a>
 </p>
