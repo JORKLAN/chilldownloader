@@ -2,7 +2,7 @@
 // @name         ⬇️ All-in-One Video Downloader & Ad Blocker 🚫 (YouTube, TikTok, X, Instagram, Facebook)
 // @namespace    https://github.com/chilltube
 // @icon         https://raw.githubusercontent.com/JORKLAN/chilltube/main/assets/logo.png
-// @version      1.0.8
+// @version      1.0.9
 // @description  Block and skip ads on YouTube, clean up your TikTok feed, and download videos from X, TikTok, YouTube, Instagram and Facebook with one click. You also get handy brightness, volume and playback speed controls in a simple little panel.
 // @description:it   nascondi annunci, controllo luminosità e volume, e un pulsante "Download" che apre un sito esterno per scaricare la pagina corrente.
 // @description:es  ocultador de anuncios, control de brillo y volumen, y un botón "Descargar" que abre un sitio externo para la página actual.
@@ -1682,30 +1682,38 @@
       toast(t.saved);
     }
 
-    // Video/audio quality choices, mirroring the loader.to picker used by the
+    // Video/audio quality options + labels, copied from the loader.to picker used by the
     // Youtube-tools-extension project (https://github.com/DeveloperMDCM/Youtube-tools-extension).
-    const DL_VIDEO = [['360','360p'],['480','480p'],['720','720p'],['1080','1080p'],['4k','4K'],['8k','8K']];
-    const DL_AUDIO = [['mp3','MP3'],['m4a','M4A'],['flac','FLAC'],['wav','WAV'],['aac','AAC'],['opus','OPUS'],['ogg','OGG']];
+    const DL_VIDEO = [
+      ['360', '360p Mp4'], ['480', '480p Mp4'], ['720', '720p HD Mp4 Default'],
+      ['1080', '1080p FULL HD Mp4'], ['4k', '2160p 4K WEBM'], ['8k', '4320p 8K WEBM']
+    ];
+    const DL_AUDIO = [
+      ['flac', 'Audio FLAC UHQ'], ['wav', 'Audio WAV UHQ'], ['mp3', 'Audio MP3 Default'],
+      ['m4a', 'Audio M4A'], ['aac', 'Audio AAC'], ['opus', 'Audio OPUS'], ['ogg', 'Audio OGG']
+    ];
 
     let _dlPickStyleInjected = false;
     function injectDlPickStyle() {
       if (_dlPickStyleInjected) return;
       _dlPickStyleInjected = true;
       addStyle(`
-        .ct-dl-sec { margin:12px 0 6px; font-size:12px; color:#9aa0a6; text-align:left; letter-spacing:.3px; }
-        .ct-dl-grid { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
-        .ct-dl-q { background:#1a1c1f; border:1px solid #2a2c30; color:#fff; border-radius:10px;
-          padding:9px 12px; cursor:pointer; font-size:14px; min-width:58px; transition:.15s; }
-        .ct-dl-q:hover { background:#34c759; color:#06210f; border-color:#34c759; }
-        .ct-dl-q.active { background:#34c759; color:#06210f; border-color:#34c759; }
-        .ct-dl-frame { width:100%; height:64px; border:none; margin-top:14px; border-radius:10px;
+        .ct-dl-tabs { display:flex; gap:10px; justify-content:center; margin-top:6px; }
+        .ct-dl-mode { flex:1; background:#1a1c1f; border:1px solid #2a2c30; color:#fff; border-radius:10px;
+          padding:10px 0; cursor:pointer; font-size:15px; font-weight:600; transition:.15s; }
+        .ct-dl-mode:hover { background:#1f2124; }
+        .ct-dl-mode.active { background:#34c759; color:#06210f; border-color:#34c759; }
+        .ct-dl-select { width:100%; margin-top:12px; background:#161719; border:1px solid #2a2c30;
+          color:#fff; border-radius:10px; padding:10px 12px; font-size:14px; display:none; }
+        .ct-dl-select.show { display:block; }
+        .ct-dl-frame { width:100%; height:64px; border:none; margin-top:12px; border-radius:10px;
           display:none; background:#0d0e0f; }
         .ct-dl-frame.show { display:block; }
       `);
     }
 
-    // Picker modal: choose a resolution/format, then embed the loader.to button
-    // that performs the actual conversion/download for the current video URL.
+    // Picker modal: MP4/MP3 toggle reveals a quality dropdown, and selecting a
+    // quality embeds the loader.to button that performs the actual download.
     function showDownloadPicker(pageUrl) {
       injectDlPickStyle();
       const backdrop = document.createElement('div');
@@ -1713,16 +1721,18 @@
       const card = document.createElement('div');
       card.className = 'ct-warn';
 
-      const buttons = arr => arr
-        .map(([f, label]) => '<button class="ct-dl-q" data-f="' + f + '">' + label + '</button>')
-        .join('');
+      const options = (arr, placeholder) =>
+        '<option selected disabled>' + placeholder + '</option>' +
+        arr.map(([v, label]) => '<option value="' + v + '">' + label + '</option>').join('');
 
       setHTML(card,
         '<h3>' + (t.download || 'Download') + '</h3>' +
-        '<div class="ct-dl-sec">Video</div>' +
-        '<div class="ct-dl-grid">' + buttons(DL_VIDEO) + '</div>' +
-        '<div class="ct-dl-sec">Audio</div>' +
-        '<div class="ct-dl-grid">' + buttons(DL_AUDIO) + '</div>' +
+        '<div class="ct-dl-tabs">' +
+          '<button class="ct-dl-mode" id="ct-dl-mp4">MP4</button>' +
+          '<button class="ct-dl-mode" id="ct-dl-mp3">MP3</button>' +
+        '</div>' +
+        '<select class="ct-dl-select" id="ct-dl-vsel">' + options(DL_VIDEO, 'Quality video') + '</select>' +
+        '<select class="ct-dl-select" id="ct-dl-asel">' + options(DL_AUDIO, 'Quality audio') + '</select>' +
         '<iframe class="ct-dl-frame" id="ct-dl-frame" allow="autoplay"></iframe>' +
         '<button class="ct-warn-cancel" id="ct-dl-close">' + (t.cancel || 'Cancel') + '</button>'
       );
@@ -1731,18 +1741,31 @@
       requestAnimationFrame(() => backdrop.classList.add('show'));
 
       const frame = card.querySelector('#ct-dl-frame');
+      const vsel  = card.querySelector('#ct-dl-vsel');
+      const asel  = card.querySelector('#ct-dl-asel');
+      const mp4   = card.querySelector('#ct-dl-mp4');
+      const mp3   = card.querySelector('#ct-dl-mp3');
       function close() { backdrop.classList.remove('show'); setTimeout(() => backdrop.remove(), 200); }
 
-      card.querySelectorAll('.ct-dl-q').forEach(b => {
-        b.addEventListener('click', () => {
-          card.querySelectorAll('.ct-dl-q').forEach(x => x.classList.remove('active'));
-          b.classList.add('active');
-          const f = b.getAttribute('data-f');
-          frame.src = 'https://loader.to/api/button/?url=' + encodeURIComponent(pageUrl) +
-                      '&f=' + encodeURIComponent(f) + '&color=34c759';
-          frame.classList.add('show');
-        });
+      function loadFrame(f, color) {
+        frame.src = 'https://loader.to/api/button/?url=' + encodeURIComponent(pageUrl) +
+                    '&f=' + encodeURIComponent(f) + '&color=' + color;
+        frame.classList.add('show');
+      }
+
+      mp4.addEventListener('click', () => {
+        mp4.classList.add('active'); mp3.classList.remove('active');
+        vsel.classList.add('show'); asel.classList.remove('show');
+        frame.classList.remove('show');
       });
+      mp3.addEventListener('click', () => {
+        mp3.classList.add('active'); mp4.classList.remove('active');
+        asel.classList.add('show'); vsel.classList.remove('show');
+        frame.classList.remove('show');
+      });
+      vsel.addEventListener('change', e => loadFrame(e.target.value, '0af'));
+      asel.addEventListener('change', e => loadFrame(e.target.value, '049c16'));
+
       card.querySelector('#ct-dl-close').addEventListener('click', close);
       backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
     }
