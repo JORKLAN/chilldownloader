@@ -2,7 +2,7 @@
 // @name         ⬇️ All-in-One Video Downloader & Ad Blocker 🚫 (YouTube, TikTok, X, Instagram, Facebook)
 // @namespace    https://github.com/chilltube
 // @icon         https://raw.githubusercontent.com/JORKLAN/chilltube/main/assets/logo.png
-// @version      1.0.10
+// @version      1.0.11
 // @description  Block and skip ads on YouTube, clean up your TikTok feed, and download videos from X, TikTok, YouTube, Instagram and Facebook with one click. You also get handy brightness, volume and playback speed controls in a simple little panel.
 // @description:it   nascondi annunci, controllo luminosità e volume, e un pulsante "Download" che apre un sito esterno per scaricare la pagina corrente.
 // @description:es  ocultador de anuncios, control de brillo y volumen, y un botón "Descargar" que abre un sitio externo para la página actual.
@@ -38,6 +38,7 @@
 // @grant        GM_openInTab
 // @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
+// @connect      *
 // @noframes
 // @license MIT
 // @downloadURL https://update.greasyfork.org/scripts/579352/%E2%AC%87%EF%B8%8F%20All-in-One%20Video%20Downloader%20%20Ad%20Blocker%20%F0%9F%9A%AB%20%28YouTube%2C%20TikTok%2C%20X%2C%20Instagram%2C%20Facebook%29.user.js
@@ -1682,29 +1683,115 @@
       toast(t.saved);
     }
 
-    // Working multi-site downloader, opened in a new tab. We don't embed it in an
-    // iframe because YouTube's CSP blocks third-party frames and loader.to's
-    // embeddable button is dead (invalid SSL). SnapAny works for YouTube, TikTok,
-    // X/Twitter and Facebook; the user pastes the (auto-copied) link and picks the
-    // exact quality/format there. To switch services later, change this one line
-    // (e.g. https://snapany.com/ , https://saveall.fr/ , https://oneforalldownloader.com/ ).
-    const DOWNLOADER_SITE = 'https://snapany.com/';
+    // ---- In-page downloader -------------------------------------------------
+    // The file is fetched and saved right here in the panel (no external site).
+    // YouTube serves encrypted, split streams, so we resolve direct stream URLs
+    // via public Piped instances; other sites expose the <video> source directly.
+    // GM_xmlhttpRequest is used to fetch cross-origin without CORS, then we save
+    // the resulting blob. If all of that fails we fall back to opening a site.
+    const DOWNLOADER_SITE = 'https://snapany.com/'; // fallback only
+
+    // Public Piped API instances (tried in order; they go up/down frequently).
+    const PIPED_INSTANCES = [
+      'https://pipedapi.kavin.rocks',
+      'https://pipedapi.adminforge.de',
+      'https://pipedapi.leptons.xyz',
+      'https://api.piped.private.coffee',
+      'https://pipedapi.reallyaweso.me',
+      'https://pipedapi.ducks.party'
+    ];
 
     let _dlPickStyleInjected = false;
     function injectDlPickStyle() {
       if (_dlPickStyleInjected) return;
       _dlPickStyleInjected = true;
       addStyle(`
-        .ct-dl-tabs { display:flex; gap:10px; justify-content:center; margin-top:6px; }
-        .ct-dl-mode { flex:1; background:#1a1c1f; border:1px solid #2a2c30; color:#fff; border-radius:10px;
-          padding:12px 0; cursor:pointer; font-size:15px; font-weight:600; transition:.15s; }
-        .ct-dl-mode:hover { background:#34c759; color:#06210f; border-color:#34c759; }
-        .ct-dl-hint { margin:12px 2px 2px; font-size:12px; color:#9aa0a6; line-height:1.45; }
+        .ct-dl-list { display:flex; flex-direction:column; gap:8px; margin-top:10px; max-height:300px; overflow:auto; }
+        .ct-dl-q { display:flex; justify-content:space-between; align-items:center; gap:10px;
+          background:#1a1c1f; border:1px solid #2a2c30; color:#fff; border-radius:10px;
+          padding:11px 14px; cursor:pointer; font-size:14px; transition:.15s; text-align:left; width:100%; }
+        .ct-dl-q:hover { background:#34c759; color:#06210f; border-color:#34c759; }
+        .ct-dl-q .tag { font-size:11px; opacity:.7; }
+        .ct-dl-status { margin:12px 2px; font-size:13px; color:#9aa0a6; text-align:center; line-height:1.5; }
+        .ct-dl-bar { height:6px; border-radius:6px; background:#2a2c30; overflow:hidden; margin-top:8px; }
+        .ct-dl-bar > div { height:100%; width:0; background:#34c759; transition:width .2s; }
+        .ct-dl-alt { background:none; border:none; color:#34c759; cursor:pointer; font-size:13px;
+          margin-top:8px; text-decoration:underline; }
       `);
     }
 
-    // Copy the current video link, then open the downloader in a new tab so the
-    // user can paste (Ctrl+V) and choose the final quality/format there.
+    function gmGet(url, responseType) {
+      return new Promise((resolve, reject) => {
+        if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('no-gm')); return; }
+        GM_xmlhttpRequest({
+          method: 'GET', url: url, responseType: responseType || undefined, timeout: 20000,
+          onload: r => (r.status >= 200 && r.status < 400) ? resolve(r) : reject(new Error('http ' + r.status)),
+          onerror: () => reject(new Error('neterr')), ontimeout: () => reject(new Error('timeout'))
+        });
+      });
+    }
+
+    function sanitizeName(s) {
+      return (s || 'video').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 120) || 'video';
+    }
+    function extFromMime(m) {
+      if (!m) return 'bin';
+      if (m.indexOf('mp4') >= 0) return 'mp4';
+      if (m.indexOf('webm') >= 0) return 'webm';
+      if (m.indexOf('mpeg') >= 0) return 'mp3';
+      if (m.indexOf('3gpp') >= 0) return '3gp';
+      return 'bin';
+    }
+
+    // Fetch a remote file in-page and trigger a Save, reporting progress 0..1.
+    function downloadFile(url, filename, onProgress) {
+      return new Promise((resolve, reject) => {
+        if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('no-gm')); return; }
+        GM_xmlhttpRequest({
+          method: 'GET', url: url, responseType: 'blob',
+          onprogress: e => { if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total); },
+          onload: r => {
+            try {
+              const u = URL.createObjectURL(r.response);
+              const a = document.createElement('a');
+              a.href = u; a.download = filename;
+              document.body.appendChild(a); a.click(); a.remove();
+              setTimeout(() => URL.revokeObjectURL(u), 20000);
+              resolve();
+            } catch (e) { reject(e); }
+          },
+          onerror: () => reject(new Error('neterr')), ontimeout: () => reject(new Error('timeout'))
+        });
+      });
+    }
+
+    async function fetchYouTubeStreams(videoId) {
+      for (let i = 0; i < PIPED_INSTANCES.length; i++) {
+        try {
+          const r = await gmGet(PIPED_INSTANCES[i] + '/streams/' + encodeURIComponent(videoId));
+          const data = JSON.parse(r.responseText);
+          if (data && (data.videoStreams || data.audioStreams)) return data;
+        } catch (e) { /* try next instance */ }
+      }
+      return null;
+    }
+
+    function currentPageUrl() {
+      if (!isYouTube()) { const f = getCurrentVideoUrl && getCurrentVideoUrl(); if (f) return f; }
+      return location.href;
+    }
+    // A directly-downloadable <video> source on the page (non-blob), if any.
+    function getPlayingMediaSrc() {
+      const vids = Array.prototype.slice.call(document.querySelectorAll('video'));
+      let best = null;
+      vids.forEach(v => {
+        const s = v.currentSrc || v.src || '';
+        if (s && s.indexOf('blob:') !== 0) { if (!best || !v.paused) best = s; }
+      });
+      return best;
+    }
+
+    // Fallback: copy the link and open an external downloader in a new tab.
     function copyAndOpenDownloader(pageUrl) {
       const open = () => openTab(DOWNLOADER_SITE);
       try {
@@ -1715,50 +1802,86 @@
       toast(t.dl_paste || 'Link copied — press Ctrl+V on the page');
     }
 
-    // Picker modal: pick Video (MP4) or Audio (MP3); both copy the link and open
-    // the downloader, where the exact resolution/format is chosen.
-    function showDownloadPicker(pageUrl) {
+    function showDownloadPicker() {
       injectDlPickStyle();
       const backdrop = document.createElement('div');
       backdrop.className = 'ct-warn-backdrop';
       const card = document.createElement('div');
       card.className = 'ct-warn';
-
       setHTML(card,
         '<h3>' + (t.download || 'Download') + '</h3>' +
-        '<div class="ct-dl-tabs">' +
-          '<button class="ct-dl-mode" id="ct-dl-mp4">MP4 (Video)</button>' +
-          '<button class="ct-dl-mode" id="ct-dl-mp3">MP3 (Audio)</button>' +
-        '</div>' +
-        '<div class="ct-dl-hint">' +
-          (t.dl_warn_body || 'The video link has been copied. On the page that opens, just paste it (Ctrl+V), then pick your quality and download.') +
-        '</div>' +
+        '<div id="ct-dl-body"><div class="ct-dl-status">…</div></div>' +
         '<button class="ct-warn-cancel" id="ct-dl-close">' + (t.cancel || 'Cancel') + '</button>'
       );
       backdrop.appendChild(card);
       root.appendChild(backdrop);
       requestAnimationFrame(() => backdrop.classList.add('show'));
-
+      const body = card.querySelector('#ct-dl-body');
       function close() { backdrop.classList.remove('show'); setTimeout(() => backdrop.remove(), 200); }
-      card.querySelector('#ct-dl-mp4').addEventListener('click', () => { copyAndOpenDownloader(pageUrl); close(); });
-      card.querySelector('#ct-dl-mp3').addEventListener('click', () => { copyAndOpenDownloader(pageUrl); close(); });
       card.querySelector('#ct-dl-close').addEventListener('click', close);
       backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
-    }
 
-    function triggerDownload() {
-      let pageUrl = location.href;
-      if (isTikTok() || isInstagram() || isFacebook() || isTwitter()) {
-        const found = getCurrentVideoUrl();
-        if (found) {
-          pageUrl = found;
+      const status = msg => setHTML(body, '<div class="ct-dl-status">' + msg + '</div>');
+      const addAlt = () => {
+        const b = document.createElement('button');
+        b.className = 'ct-dl-alt';
+        b.textContent = (t.dl_warn_ok || 'Open downloader') + ' →';
+        b.addEventListener('click', () => { copyAndOpenDownloader(currentPageUrl()); close(); });
+        body.appendChild(b);
+      };
+
+      // Build one clickable download row that fetches + saves with a progress bar.
+      function addRow(list, prog, label, tag, url, ext, baseName) {
+        const b = document.createElement('button');
+        b.className = 'ct-dl-q';
+        const left = document.createElement('span'); left.textContent = label;
+        const right = document.createElement('span'); right.className = 'tag'; right.textContent = tag;
+        b.appendChild(left); b.appendChild(right);
+        b.addEventListener('click', () => {
+          setHTML(prog, (t.download || 'Download') + '… <div class="ct-dl-bar"><div id="ct-dl-fill"></div></div>');
+          const fill = prog.querySelector('#ct-dl-fill');
+          downloadFile(url, baseName + '.' + ext, p => { if (fill) fill.style.width = Math.round(p * 100) + '%'; })
+            .then(() => setHTML(prog, '✓ ' + (t.saved || 'Saved!')))
+            .catch(() => { setHTML(prog, '✗ ' + (t.dl_novideo ? 'Failed' : 'Failed')); addAlt(); });
+        });
+        list.appendChild(b);
+      }
+
+      if (isYouTube()) {
+        const id = getYouTubeId();
+        if (!id) { status(t.dl_novideo || 'Open a video first'); return; }
+        status('⏳');
+        fetchYouTubeStreams(id).then(data => {
+          if (!data) { status('Could not reach a download server.'); addAlt(); return; }
+          const baseName = sanitizeName(data.title);
+          const combined = (data.videoStreams || []).filter(s => s.videoOnly === false)
+            .sort((a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0));
+          const bestAudio = (data.audioStreams || []).slice()
+            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+          if (!combined.length && !bestAudio) { status('No downloadable streams found.'); addAlt(); return; }
+          setHTML(body, '<div class="ct-dl-list" id="ct-dl-list"></div><div class="ct-dl-status" id="ct-dl-prog"></div>');
+          const list = body.querySelector('#ct-dl-list');
+          const prog = body.querySelector('#ct-dl-prog');
+          combined.forEach(s => addRow(list, prog, s.quality || 'Video', extFromMime(s.mimeType).toUpperCase(), s.url, extFromMime(s.mimeType), baseName));
+          if (bestAudio) addRow(list, prog, 'Audio', extFromMime(bestAudio.mimeType).toUpperCase(), bestAudio.url, extFromMime(bestAudio.mimeType), baseName);
+          addAlt();
+        }).catch(() => { status('Could not reach a download server.'); addAlt(); });
+      } else {
+        const src = getPlayingMediaSrc();
+        if (src) {
+          setHTML(body, '<div class="ct-dl-list" id="ct-dl-list"></div><div class="ct-dl-status" id="ct-dl-prog"></div>');
+          const list = body.querySelector('#ct-dl-list');
+          const prog = body.querySelector('#ct-dl-prog');
+          addRow(list, prog, t.download || 'Download video', 'MP4', src, 'mp4', sanitizeName(document.title));
+          addAlt();
         } else {
-          toast(t.dl_novideo || 'Open a video first');
-          return;
+          status('Could not read the video directly here.');
+          addAlt();
         }
       }
-      showDownloadPicker(pageUrl);
     }
+
+    function triggerDownload() { showDownloadPicker(); }
 
     function setupPlayerButton() {
       let btn = document.getElementById('chilltube-dlfab');
