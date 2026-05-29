@@ -2,7 +2,7 @@
 // @name         ⬇️ All-in-One Video Downloader & Ad Blocker 🚫 (YouTube, TikTok, X, Instagram, Facebook)
 // @namespace    https://github.com/chilltube
 // @icon         https://raw.githubusercontent.com/JORKLAN/chilltube/main/assets/logo.png
-// @version      1.0.11
+// @version      1.0.12
 // @description  Block and skip ads on YouTube, clean up your TikTok feed, and download videos from X, TikTok, YouTube, Instagram and Facebook with one click. You also get handy brightness, volume and playback speed controls in a simple little panel.
 // @description:it   nascondi annunci, controllo luminosità e volume, e un pulsante "Download" che apre un sito esterno per scaricare la pagina corrente.
 // @description:es  ocultador de anuncios, control de brillo y volumen, y un botón "Descargar" que abre un sitio externo para la página actual.
@@ -1854,16 +1854,36 @@
         fetchYouTubeStreams(id).then(data => {
           if (!data) { status('Could not reach a download server.'); addAlt(); return; }
           const baseName = sanitizeName(data.title);
-          const combined = (data.videoStreams || []).filter(s => s.videoOnly === false)
+          // Keep the best stream per resolution: prefer one that already has
+          // audio (<=720p), then mp4 over webm. Higher resolutions (1080p-4K+)
+          // are video-only on YouTube.
+          const byQ = {};
+          (data.videoStreams || []).forEach(s => {
+            const q = s.quality || '';
+            if (!q) return;
+            const score = (s.videoOnly === false ? 100 : 0) + (extFromMime(s.mimeType) === 'mp4' ? 10 : 0);
+            if (!byQ[q] || score > byQ[q]._score) { s._score = score; byQ[q] = s; }
+          });
+          const vids = Object.keys(byQ).map(q => byQ[q])
             .sort((a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0));
           const bestAudio = (data.audioStreams || []).slice()
             .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-          if (!combined.length && !bestAudio) { status('No downloadable streams found.'); addAlt(); return; }
-          setHTML(body, '<div class="ct-dl-list" id="ct-dl-list"></div><div class="ct-dl-status" id="ct-dl-prog"></div>');
+          if (!vids.length && !bestAudio) { status('No downloadable streams found.'); addAlt(); return; }
+          setHTML(body,
+            '<div class="ct-dl-status" id="ct-dl-note">' +
+              '⚠️ ' + (t.dl_videoonly || '1080p+ are video-only — grab the Audio row too and merge them.') +
+            '</div>' +
+            '<div class="ct-dl-list" id="ct-dl-list"></div>' +
+            '<div class="ct-dl-status" id="ct-dl-prog"></div>');
           const list = body.querySelector('#ct-dl-list');
           const prog = body.querySelector('#ct-dl-prog');
-          combined.forEach(s => addRow(list, prog, s.quality || 'Video', extFromMime(s.mimeType).toUpperCase(), s.url, extFromMime(s.mimeType), baseName));
-          if (bestAudio) addRow(list, prog, 'Audio', extFromMime(bestAudio.mimeType).toUpperCase(), bestAudio.url, extFromMime(bestAudio.mimeType), baseName);
+          vids.forEach(s => {
+            const ext = extFromMime(s.mimeType);
+            const hasAudio = s.videoOnly === false;
+            const label = (s.quality || 'Video') + (hasAudio ? '  🔊' : '  (video only)');
+            addRow(list, prog, label, ext.toUpperCase(), s.url, ext, baseName);
+          });
+          if (bestAudio) addRow(list, prog, 'Audio only', extFromMime(bestAudio.mimeType).toUpperCase(), bestAudio.url, extFromMime(bestAudio.mimeType), baseName);
           addAlt();
         }).catch(() => { status('Could not reach a download server.'); addAlt(); });
       } else {
