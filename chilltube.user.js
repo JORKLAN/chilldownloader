@@ -2,7 +2,7 @@
 // @name         ⬇️ All-in-One Video Downloader & Ad Blocker 🚫 (YouTube, TikTok, X, Instagram, Facebook)
 // @namespace    https://github.com/chilltube
 // @icon         https://raw.githubusercontent.com/JORKLAN/chilltube/main/assets/logo.png
-// @version      1.0.13
+// @version      1.0.14
 // @description  Block and skip ads on YouTube, clean up your TikTok feed, and download videos from X, TikTok, YouTube, Instagram and Facebook with one click. You also get handy brightness, volume and playback speed controls in a simple little panel.
 // @description:it   nascondi annunci, controllo luminosità e volume, e un pulsante "Download" che apre un sito esterno per scaricare la pagina corrente.
 // @description:es  ocultador de anuncios, control de brillo y volumen, y un botón "Descargar" que abre un sitio externo para la página actual.
@@ -38,8 +38,14 @@
 // @grant        GM_openInTab
 // @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
-// @connect      *
-// @require      https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js
+// @connect      tiktokcdn.com
+// @connect      tiktokcdn-us.com
+// @connect      tiktokv.com
+// @connect      muscdn.com
+// @connect      cdninstagram.com
+// @connect      fbcdn.net
+// @connect      twimg.com
+// @connect      akamaized.net
 // @noframes
 // @license MIT
 // @downloadURL https://update.greasyfork.org/scripts/579352/%E2%AC%87%EF%B8%8F%20All-in-One%20Video%20Downloader%20%20Ad%20Blocker%20%F0%9F%9A%AB%20%28YouTube%2C%20TikTok%2C%20X%2C%20Instagram%2C%20Facebook%29.user.js
@@ -1684,23 +1690,14 @@
       toast(t.saved);
     }
 
-    // ---- In-page downloader -------------------------------------------------
-    // The file is fetched and saved right here in the panel (no external site).
-    // YouTube serves encrypted, split streams, so we resolve direct stream URLs
-    // via public Piped instances; other sites expose the <video> source directly.
-    // GM_xmlhttpRequest is used to fetch cross-origin without CORS, then we save
-    // the resulting blob. If all of that fails we fall back to opening a site.
-    const DOWNLOADER_SITE = 'https://snapany.com/'; // fallback only
-
-    // Public Piped API instances (tried in order; they go up/down frequently).
-    const PIPED_INSTANCES = [
-      'https://pipedapi.kavin.rocks',
-      'https://pipedapi.adminforge.de',
-      'https://pipedapi.leptons.xyz',
-      'https://api.piped.private.coffee',
-      'https://pipedapi.reallyaweso.me',
-      'https://pipedapi.ducks.party'
-    ];
+    // ---- Downloader ---------------------------------------------------------
+    // YouTube splits video/audio into separate encrypted streams; only a server
+    // can fetch + merge them to 2K/4K with audio, so YouTube opens a reliable
+    // downloader site (link auto-copied) instead. TikTok / Instagram / X /
+    // Facebook expose the <video> file directly, so those download in-page with
+    // no popups (their CDNs are pre-authorised via the @connect lines above).
+    // Change this one line to use a different site for YouTube / as a fallback.
+    const DOWNLOADER_SITE = 'https://snapany.com/';
 
     let _dlPickStyleInjected = false;
     function injectDlPickStyle() {
@@ -1721,29 +1718,9 @@
       `);
     }
 
-    function gmGet(url, responseType) {
-      return new Promise((resolve, reject) => {
-        if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('no-gm')); return; }
-        GM_xmlhttpRequest({
-          method: 'GET', url: url, responseType: responseType || undefined, timeout: 20000,
-          onload: r => (r.status >= 200 && r.status < 400) ? resolve(r) : reject(new Error('http ' + r.status)),
-          onerror: () => reject(new Error('neterr')), ontimeout: () => reject(new Error('timeout'))
-        });
-      });
-    }
-
     function sanitizeName(s) {
       return (s || 'video').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 120) || 'video';
     }
-    function extFromMime(m) {
-      if (!m) return 'bin';
-      if (m.indexOf('mp4') >= 0) return 'mp4';
-      if (m.indexOf('webm') >= 0) return 'webm';
-      if (m.indexOf('mpeg') >= 0) return 'mp3';
-      if (m.indexOf('3gpp') >= 0) return '3gp';
-      return 'bin';
-    }
-
     // Fetch a remote file in-page and trigger a Save, reporting progress 0..1.
     function downloadFile(url, filename, onProgress) {
       return new Promise((resolve, reject) => {
@@ -1764,65 +1741,6 @@
           onerror: () => reject(new Error('neterr')), ontimeout: () => reject(new Error('timeout'))
         });
       });
-    }
-
-    function fetchArrayBuffer(url, onProgress) {
-      return new Promise((resolve, reject) => {
-        if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('no-gm')); return; }
-        GM_xmlhttpRequest({
-          method: 'GET', url: url, responseType: 'arraybuffer', timeout: 300000,
-          onprogress: e => { if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total); },
-          onload: r => (r.status >= 200 && r.status < 400) ? resolve(r.response) : reject(new Error('http ' + r.status)),
-          onerror: () => reject(new Error('neterr')), ontimeout: () => reject(new Error('timeout'))
-        });
-      });
-    }
-
-    function saveBlob(blob, filename) {
-      const u = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = u; a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(u), 20000);
-    }
-
-    // Lazy-load ffmpeg.wasm (single-thread core — no SharedArrayBuffer/cross-origin
-    // isolation needed). The library comes from @require; the core + worker are
-    // fetched at runtime via GM_xmlhttpRequest and passed to ffmpeg as blob URLs.
-    let _ffmpeg = null, _ffmpegLoading = null;
-    function loadFFmpeg() {
-      if (_ffmpeg) return Promise.resolve(_ffmpeg);
-      if (_ffmpegLoading) return _ffmpegLoading;
-      _ffmpegLoading = (async () => {
-        const NS = (typeof FFmpegWASM !== 'undefined' && FFmpegWASM) ||
-                   (typeof window !== 'undefined' && window.FFmpegWASM);
-        if (!NS || !NS.FFmpeg) throw new Error('ffmpeg-lib-missing');
-        const FF = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd';
-        const CORE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-        const blobURL = async (url, type) => {
-          const buf = await fetchArrayBuffer(url);
-          return URL.createObjectURL(new Blob([buf], { type: type }));
-        };
-        const classWorkerURL = await blobURL(FF + '/814.ffmpeg.js', 'text/javascript');
-        const coreURL = await blobURL(CORE + '/ffmpeg-core.js', 'text/javascript');
-        const wasmURL = await blobURL(CORE + '/ffmpeg-core.wasm', 'application/wasm');
-        const ff = new NS.FFmpeg();
-        await ff.load({ classWorkerURL: classWorkerURL, coreURL: coreURL, wasmURL: wasmURL });
-        _ffmpeg = ff;
-        return ff;
-      })();
-      return _ffmpegLoading;
-    }
-
-    async function fetchYouTubeStreams(videoId) {
-      for (let i = 0; i < PIPED_INSTANCES.length; i++) {
-        try {
-          const r = await gmGet(PIPED_INSTANCES[i] + '/streams/' + encodeURIComponent(videoId));
-          const data = JSON.parse(r.responseText);
-          if (data && (data.videoStreams || data.audioStreams)) return data;
-        } catch (e) { /* try next instance */ }
-      }
-      return null;
     }
 
     function currentPageUrl() {
@@ -1852,6 +1770,11 @@
     }
 
     function showDownloadPicker() {
+      // YouTube: hand off to a downloader site that fetches + merges server-side
+      // (reliable, up to 2K/4K with audio, and no permission popups).
+      if (isYouTube()) { copyAndOpenDownloader(location.href); return; }
+
+      // TikTok / Instagram / X / Facebook: download the video file in-page.
       injectDlPickStyle();
       const backdrop = document.createElement('div');
       backdrop.className = 'ct-warn-backdrop';
@@ -1879,123 +1802,29 @@
         body.appendChild(b);
       };
 
-      // A download row whose click runs the given async task(prog, button).
-      function addRow(list, prog, label, tag, task) {
-        const b = document.createElement('button');
-        b.className = 'ct-dl-q';
-        const left = document.createElement('span'); left.textContent = label;
-        const right = document.createElement('span'); right.className = 'tag'; right.textContent = tag;
-        b.appendChild(left); b.appendChild(right);
-        b.addEventListener('click', () => { if (!b.dataset.busy) { b.dataset.busy = '1'; Promise.resolve(task(prog)).finally(() => { delete b.dataset.busy; }); } });
-        list.appendChild(b);
-      }
-      function bar(prog, label, pct) {
-        setHTML(prog, label + ' <div class="ct-dl-bar"><div class="ct-dl-fill" style="width:' + (pct || 0) + '%"></div></div>');
-        return prog.querySelector('.ct-dl-fill');
-      }
-      // Direct single-file download (used for ≤720p combined, audio, and other sites).
-      function directTask(url, filename) {
-        return (prog) => {
-          const fill = bar(prog, (t.download || 'Download') + '…', 0);
-          return downloadFile(url, filename, p => { if (fill) fill.style.width = Math.round(p * 100) + '%'; })
-            .then(() => setHTML(prog, '✓ ' + (t.saved || 'Saved!')))
-            .catch(() => setHTML(prog, '✗ Failed'));
-        };
-      }
-      // Video-only + audio → fetch both, merge with ffmpeg, save ONE file.
-      // Falls back to saving the two parts separately if ffmpeg can't run here.
-      function muxTask(vStream, audioList, baseName) {
-        return async (prog) => {
-          const vext = extFromMime(vStream.mimeType);
-          let audio = (vext === 'mp4' ? audioList.find(a => extFromMime(a.mimeType) === 'mp4') : null) ||
-                      audioList.find(a => extFromMime(a.mimeType) === vext) || audioList[0];
-          try {
-            if (!audio) throw new Error('no-audio');
-            const aext = extFromMime(audio.mimeType);
-            const outExt = (vext === 'mp4' && aext === 'mp4') ? 'mp4'
-                         : (vext === 'webm' && aext === 'webm') ? 'webm' : 'mkv';
-            let fill = bar(prog, 'Downloading video…', 0);
-            const vbuf = await fetchArrayBuffer(vStream.url, p => { if (fill) fill.style.width = Math.round(p * 45) + '%'; });
-            fill = bar(prog, 'Downloading audio…', 45);
-            const abuf = await fetchArrayBuffer(audio.url, p => { if (fill) fill.style.width = (45 + Math.round(p * 30)) + '%'; });
-            setHTML(prog, 'Merging with ffmpeg… first run loads ~30 MB, please wait ⏳');
-            const ff = await loadFFmpeg();
-            await ff.writeFile('v.' + vext, new Uint8Array(vbuf));
-            await ff.writeFile('a.' + aext, new Uint8Array(abuf));
-            await ff.exec(['-i', 'v.' + vext, '-i', 'a.' + aext, '-c', 'copy', '-shortest', 'out.' + outExt]);
-            const out = await ff.readFile('out.' + outExt);
-            saveBlob(new Blob([out.buffer], { type: 'video/' + outExt }), baseName + '.' + outExt);
-            try { ff.deleteFile('v.' + vext); ff.deleteFile('a.' + aext); ff.deleteFile('out.' + outExt); } catch (e) {}
-            setHTML(prog, '✓ ' + (t.saved || 'Saved!') + ' (' + outExt.toUpperCase() + ' + audio)');
-          } catch (e) {
-            setHTML(prog, '⚠️ In-browser merge unavailable here — saving video + audio separately…');
-            try {
-              await downloadFile(vStream.url, baseName + '_video.' + vext);
-              if (audio) await downloadFile(audio.url, baseName + '_audio.' + extFromMime(audio.mimeType));
-              setHTML(prog, 'Saved video + audio as 2 files — merge with any tool.');
-            } catch (e2) { setHTML(prog, '✗ Failed'); addAlt(); }
-          }
-        };
-      }
+      const src = getPlayingMediaSrc();
+      if (!src) { status(t.dl_novideo || 'Open a video first'); addAlt(); return; }
 
-      if (isYouTube()) {
-        const id = getYouTubeId();
-        if (!id) { status(t.dl_novideo || 'Open a video first'); return; }
-        status('⏳');
-        fetchYouTubeStreams(id).then(data => {
-          if (!data) { status('Could not reach a download server.'); addAlt(); return; }
-          const baseName = sanitizeName(data.title);
-          const audioList = (data.audioStreams || []).slice().sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-          // Keep the best stream per resolution (prefer with-audio, then mp4).
-          const byQ = {};
-          (data.videoStreams || []).forEach(s => {
-            const q = s.quality || '';
-            if (!q) return;
-            const score = (s.videoOnly === false ? 100 : 0) + (extFromMime(s.mimeType) === 'mp4' ? 10 : 0);
-            if (!byQ[q] || score > byQ[q]._score) { s._score = score; byQ[q] = s; }
-          });
-          const vids = Object.keys(byQ).map(q => byQ[q])
-            .sort((a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0));
-          if (!vids.length && !audioList.length) { status('No downloadable streams found.'); addAlt(); return; }
-          const canMux = (typeof FFmpegWASM !== 'undefined');
-          setHTML(body,
-            '<div class="ct-dl-status">' +
-              (canMux ? '🔊 ' + (t.dl_merge || 'High-res picks are merged with audio automatically (the first merge loads ffmpeg — be patient).')
-                      : '⚠️ ' + (t.dl_videoonly || '1080p+ are video-only — also grab Audio and merge them.')) +
-            '</div>' +
-            '<div class="ct-dl-list" id="ct-dl-list"></div>' +
-            '<div class="ct-dl-status" id="ct-dl-prog"></div>');
-          const list = body.querySelector('#ct-dl-list');
-          const prog = body.querySelector('#ct-dl-prog');
-          vids.forEach(s => {
-            const ext = extFromMime(s.mimeType);
-            if (s.videoOnly === false) {
-              addRow(list, prog, (s.quality || 'Video') + '  🔊', ext.toUpperCase(), directTask(s.url, baseName + '.' + ext));
-            } else if (canMux && audioList.length) {
-              addRow(list, prog, (s.quality || 'Video') + '  🔊 (merged)', ext.toUpperCase(), muxTask(s, audioList, baseName));
-            } else {
-              addRow(list, prog, (s.quality || 'Video') + '  (video only)', ext.toUpperCase(), directTask(s.url, baseName + '_video.' + ext));
-            }
-          });
-          if (audioList[0]) {
-            const a = audioList[0];
-            addRow(list, prog, 'Audio only', extFromMime(a.mimeType).toUpperCase(), directTask(a.url, baseName + '_audio.' + extFromMime(a.mimeType)));
-          }
-          addAlt();
-        }).catch(() => { status('Could not reach a download server.'); addAlt(); });
-      } else {
-        const src = getPlayingMediaSrc();
-        if (src) {
-          setHTML(body, '<div class="ct-dl-list" id="ct-dl-list"></div><div class="ct-dl-status" id="ct-dl-prog"></div>');
-          const list = body.querySelector('#ct-dl-list');
-          const prog = body.querySelector('#ct-dl-prog');
-          addRow(list, prog, t.download || 'Download video', 'MP4', directTask(src, sanitizeName(document.title) + '.mp4'));
-          addAlt();
-        } else {
-          status('Could not read the video directly here.');
-          addAlt();
-        }
-      }
+      setHTML(body, '<div class="ct-dl-list" id="ct-dl-list"></div><div class="ct-dl-status" id="ct-dl-prog"></div>');
+      const list = body.querySelector('#ct-dl-list');
+      const prog = body.querySelector('#ct-dl-prog');
+      const b = document.createElement('button');
+      b.className = 'ct-dl-q';
+      const left = document.createElement('span'); left.textContent = (t.download || 'Download') + ' video';
+      const right = document.createElement('span'); right.className = 'tag'; right.textContent = 'MP4';
+      b.appendChild(left); b.appendChild(right);
+      b.addEventListener('click', () => {
+        if (b.dataset.busy) return;
+        b.dataset.busy = '1';
+        setHTML(prog, (t.download || 'Download') + '… <div class="ct-dl-bar"><div class="ct-dl-fill"></div></div>');
+        const fill = prog.querySelector('.ct-dl-fill');
+        downloadFile(src, sanitizeName(document.title) + '.mp4', p => { if (fill) fill.style.width = Math.round(p * 100) + '%'; })
+          .then(() => setHTML(prog, '✓ ' + (t.saved || 'Saved!')))
+          .catch(() => { setHTML(prog, '✗ Failed'); addAlt(); })
+          .then(() => { delete b.dataset.busy; });
+      });
+      list.appendChild(b);
+      addAlt();
     }
 
     function triggerDownload() { showDownloadPicker(); }
