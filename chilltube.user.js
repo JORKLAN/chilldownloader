@@ -2,7 +2,7 @@
 // @name         ⬇️ All-in-One Video Downloader & Ad Blocker 🚫 (YouTube, TikTok, X, Instagram, Facebook)
 // @namespace    https://github.com/chilltube
 // @icon         https://raw.githubusercontent.com/JORKLAN/chilltube/main/assets/logo.png
-// @version      1.0.9
+// @version      1.0.10
 // @description  Block and skip ads on YouTube, clean up your TikTok feed, and download videos from X, TikTok, YouTube, Instagram and Facebook with one click. You also get handy brightness, volume and playback speed controls in a simple little panel.
 // @description:it   nascondi annunci, controllo luminosità e volume, e un pulsante "Download" che apre un sito esterno per scaricare la pagina corrente.
 // @description:es  ocultador de anuncios, control de brillo y volumen, y un botón "Descargar" que abre un sitio externo para la página actual.
@@ -1682,16 +1682,13 @@
       toast(t.saved);
     }
 
-    // Video/audio quality options + labels, copied from the loader.to picker used by the
-    // Youtube-tools-extension project (https://github.com/DeveloperMDCM/Youtube-tools-extension).
-    const DL_VIDEO = [
-      ['360', '360p Mp4'], ['480', '480p Mp4'], ['720', '720p HD Mp4 Default'],
-      ['1080', '1080p FULL HD Mp4'], ['4k', '2160p 4K WEBM'], ['8k', '4320p 8K WEBM']
-    ];
-    const DL_AUDIO = [
-      ['flac', 'Audio FLAC UHQ'], ['wav', 'Audio WAV UHQ'], ['mp3', 'Audio MP3 Default'],
-      ['m4a', 'Audio M4A'], ['aac', 'Audio AAC'], ['opus', 'Audio OPUS'], ['ogg', 'Audio OGG']
-    ];
+    // Working multi-site downloader, opened in a new tab. We don't embed it in an
+    // iframe because YouTube's CSP blocks third-party frames and loader.to's
+    // embeddable button is dead (invalid SSL). SnapAny works for YouTube, TikTok,
+    // X/Twitter and Facebook; the user pastes the (auto-copied) link and picks the
+    // exact quality/format there. To switch services later, change this one line
+    // (e.g. https://snapany.com/ , https://saveall.fr/ , https://oneforalldownloader.com/ ).
+    const DOWNLOADER_SITE = 'https://snapany.com/';
 
     let _dlPickStyleInjected = false;
     function injectDlPickStyle() {
@@ -1700,20 +1697,26 @@
       addStyle(`
         .ct-dl-tabs { display:flex; gap:10px; justify-content:center; margin-top:6px; }
         .ct-dl-mode { flex:1; background:#1a1c1f; border:1px solid #2a2c30; color:#fff; border-radius:10px;
-          padding:10px 0; cursor:pointer; font-size:15px; font-weight:600; transition:.15s; }
-        .ct-dl-mode:hover { background:#1f2124; }
-        .ct-dl-mode.active { background:#34c759; color:#06210f; border-color:#34c759; }
-        .ct-dl-select { width:100%; margin-top:12px; background:#161719; border:1px solid #2a2c30;
-          color:#fff; border-radius:10px; padding:10px 12px; font-size:14px; display:none; }
-        .ct-dl-select.show { display:block; }
-        .ct-dl-frame { width:100%; height:64px; border:none; margin-top:12px; border-radius:10px;
-          display:none; background:#0d0e0f; }
-        .ct-dl-frame.show { display:block; }
+          padding:12px 0; cursor:pointer; font-size:15px; font-weight:600; transition:.15s; }
+        .ct-dl-mode:hover { background:#34c759; color:#06210f; border-color:#34c759; }
+        .ct-dl-hint { margin:12px 2px 2px; font-size:12px; color:#9aa0a6; line-height:1.45; }
       `);
     }
 
-    // Picker modal: MP4/MP3 toggle reveals a quality dropdown, and selecting a
-    // quality embeds the loader.to button that performs the actual download.
+    // Copy the current video link, then open the downloader in a new tab so the
+    // user can paste (Ctrl+V) and choose the final quality/format there.
+    function copyAndOpenDownloader(pageUrl) {
+      const open = () => openTab(DOWNLOADER_SITE);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(pageUrl).then(open, () => { ctFallbackCopy(pageUrl); open(); });
+        } else { ctFallbackCopy(pageUrl); open(); }
+      } catch (e) { ctFallbackCopy(pageUrl); open(); }
+      toast(t.dl_paste || 'Link copied — press Ctrl+V on the page');
+    }
+
+    // Picker modal: pick Video (MP4) or Audio (MP3); both copy the link and open
+    // the downloader, where the exact resolution/format is chosen.
     function showDownloadPicker(pageUrl) {
       injectDlPickStyle();
       const backdrop = document.createElement('div');
@@ -1721,51 +1724,24 @@
       const card = document.createElement('div');
       card.className = 'ct-warn';
 
-      const options = (arr, placeholder) =>
-        '<option selected disabled>' + placeholder + '</option>' +
-        arr.map(([v, label]) => '<option value="' + v + '">' + label + '</option>').join('');
-
       setHTML(card,
         '<h3>' + (t.download || 'Download') + '</h3>' +
         '<div class="ct-dl-tabs">' +
-          '<button class="ct-dl-mode" id="ct-dl-mp4">MP4</button>' +
-          '<button class="ct-dl-mode" id="ct-dl-mp3">MP3</button>' +
+          '<button class="ct-dl-mode" id="ct-dl-mp4">MP4 (Video)</button>' +
+          '<button class="ct-dl-mode" id="ct-dl-mp3">MP3 (Audio)</button>' +
         '</div>' +
-        '<select class="ct-dl-select" id="ct-dl-vsel">' + options(DL_VIDEO, 'Quality video') + '</select>' +
-        '<select class="ct-dl-select" id="ct-dl-asel">' + options(DL_AUDIO, 'Quality audio') + '</select>' +
-        '<iframe class="ct-dl-frame" id="ct-dl-frame" allow="autoplay"></iframe>' +
+        '<div class="ct-dl-hint">' +
+          (t.dl_warn_body || 'The video link has been copied. On the page that opens, just paste it (Ctrl+V), then pick your quality and download.') +
+        '</div>' +
         '<button class="ct-warn-cancel" id="ct-dl-close">' + (t.cancel || 'Cancel') + '</button>'
       );
       backdrop.appendChild(card);
       root.appendChild(backdrop);
       requestAnimationFrame(() => backdrop.classList.add('show'));
 
-      const frame = card.querySelector('#ct-dl-frame');
-      const vsel  = card.querySelector('#ct-dl-vsel');
-      const asel  = card.querySelector('#ct-dl-asel');
-      const mp4   = card.querySelector('#ct-dl-mp4');
-      const mp3   = card.querySelector('#ct-dl-mp3');
       function close() { backdrop.classList.remove('show'); setTimeout(() => backdrop.remove(), 200); }
-
-      function loadFrame(f, color) {
-        frame.src = 'https://loader.to/api/button/?url=' + encodeURIComponent(pageUrl) +
-                    '&f=' + encodeURIComponent(f) + '&color=' + color;
-        frame.classList.add('show');
-      }
-
-      mp4.addEventListener('click', () => {
-        mp4.classList.add('active'); mp3.classList.remove('active');
-        vsel.classList.add('show'); asel.classList.remove('show');
-        frame.classList.remove('show');
-      });
-      mp3.addEventListener('click', () => {
-        mp3.classList.add('active'); mp4.classList.remove('active');
-        asel.classList.add('show'); vsel.classList.remove('show');
-        frame.classList.remove('show');
-      });
-      vsel.addEventListener('change', e => loadFrame(e.target.value, '0af'));
-      asel.addEventListener('change', e => loadFrame(e.target.value, '049c16'));
-
+      card.querySelector('#ct-dl-mp4').addEventListener('click', () => { copyAndOpenDownloader(pageUrl); close(); });
+      card.querySelector('#ct-dl-mp3').addEventListener('click', () => { copyAndOpenDownloader(pageUrl); close(); });
       card.querySelector('#ct-dl-close').addEventListener('click', close);
       backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
     }
